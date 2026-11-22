@@ -1,11 +1,13 @@
-"""Train a team-wins model on Baseball Databank data and build a static Plotly site.
+"""Model MLB team wins from same-season stats and build a static Plotly site.
 
 Run:  python src/pipeline.py
 Output: site/index.html and site/metrics.json
 """
 from __future__ import annotations
 
+import io
 import json
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -20,33 +22,49 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_PATH = ROOT / "data" / "Teams.csv"
 SITE_DIR = ROOT / "site"
 
-# Baseball Databank (Chadwick Baseball Bureau), CC BY-SA 3.0. Tried in order.
-DATA_URLS = [
-    "https://raw.githubusercontent.com/xorq-labs/baseballdatabank/master/core/Teams.csv",
-    "https://raw.githubusercontent.com/chadwickbureau/baseballdatabank/master/core/Teams.csv",
-]
+# Baseball Databank (Chadwick Baseball Bureau), CC BY-SA 3.0.
+# Pinned to a commit of the xorq-labs mirror so the same code gives the same results.
+DATA_COMMIT = "7c6d48bae384c0b2669d0ee1133b99ed083dace6"
+DATA_URL = (
+    f"https://raw.githubusercontent.com/xorq-labs/baseballdatabank/{DATA_COMMIT}/core/Teams.csv"
+)
+DOWNLOAD_TIMEOUT_S = 30
 
 FIRST_YEAR = 1900
 TRAIN_BEFORE = 2005  # seasons before this train the model; this year onward test it
 GAMES = 162
+PYTHAG_EXPONENT = 1.83
 
 COUNT_COLS = ["R", "RA", "H", "HR", "BB", "SO", "HRA", "BBA", "SOA", "E"]
 FEATURES = [f"{c}_pg" for c in COUNT_COLS] + ["ERA"]
+REQUIRED_COLS = set(COUNT_COLS) | {"yearID", "G", "W", "L", "ERA", "name"}
+
+
+def download(url: str) -> pd.DataFrame:
+    request = urllib.request.Request(url, headers={"User-Agent": "baseball-project"})
+    with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_S) as response:
+        return pd.read_csv(io.BytesIO(response.read()))
 
 
 def load_data() -> pd.DataFrame:
     if DATA_PATH.exists():
-        return pd.read_csv(DATA_PATH)
-    DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    errors = []
-    for url in DATA_URLS:
         try:
-            df = pd.read_csv(url)
-            df.to_csv(DATA_PATH, index=False)
-            return df
-        except Exception as exc:  # network or parse failure, try next source
-            errors.append(f"{url}: {exc}")
-    raise RuntimeError("Could not download Teams.csv:\n" + "\n".join(errors))
+            cached = pd.read_csv(DATA_PATH)
+            if REQUIRED_COLS.issubset(cached.columns):
+                return cached
+        except Exception:  # unreadable cache, download again
+            pass
+
+    df = download(DATA_URL)
+    missing = REQUIRED_COLS - set(df.columns)
+    if missing:
+        raise RuntimeError(f"Teams.csv is missing columns: {sorted(missing)}")
+
+    DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = DATA_PATH.with_suffix(".csv.tmp")
+    df.to_csv(tmp_path, index=False)
+    tmp_path.replace(DATA_PATH)  # atomic, so a killed run never leaves a partial cache
+    return df
 
 
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
@@ -56,7 +74,9 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     for c in COUNT_COLS:
         df[f"{c}_pg"] = df[c] / df["G"]
     df["win_pct"] = df["W"] / (df["W"] + df["L"])
-    df["pythag"] = df["R"] ** 1.83 / (df["R"] ** 1.83 + df["RA"] ** 1.83)
+    runs = df["R"] ** PYTHAG_EXPONENT
+    runs_allowed = df["RA"] ** PYTHAG_EXPONENT
+    df["pythag"] = runs / (runs + runs_allowed)
     df["label"] = df["name"] + " " + df["yearID"].astype(str)
     return df.reset_index(drop=True)
 
@@ -103,18 +123,18 @@ def fig_actual_vs_predicted(test_df: pd.DataFrame, best_col: str, best_name: str
         go.Scatter(
             x=actual, y=pred, mode="markers", name="Team season",
             text=test_df["label"],
-            hovertemplate="%{text}<br>Actual: %{x:.1f}<br>Predicted: %{y:.1f}<extra></extra>",
+            hovertemplate="%{text}<br>Actual: %{x:.1f}<br>Estimated: %{y:.1f}<extra></extra>",
             marker=dict(size=7, opacity=0.7),
         )
     )
     fig.add_trace(
-        go.Scatter(x=[lo, hi], y=[lo, hi], mode="lines", name="Perfect prediction",
+        go.Scatter(x=[lo, hi], y=[lo, hi], mode="lines", name="Perfect match",
                    line=dict(dash="dash", color="gray"))
     )
     fig.update_layout(
-        title=f"Actual vs predicted wins per {GAMES} games ({best_name}, {TRAIN_BEFORE}+ test seasons)",
+        title=f"Actual vs estimated wins per {GAMES} games (best model: {best_name}, {TRAIN_BEFORE}+ test seasons)",
         xaxis_title="Actual wins (per 162 games)",
-        yaxis_title="Predicted wins (per 162 games)",
+        yaxis_title="Estimated wins (per 162 games)",
     )
     return fig
 
@@ -139,7 +159,7 @@ def fig_importance(importances: pd.Series) -> go.Figure:
     fig.update_layout(
         title="Random forest feature importance",
         xaxis_title="Importance",
-        yaxis_title="Feature (per game unless noted)",
+        yaxis_title="Feature (per game; ERA is per 9 innings)",
     )
     return fig
 
@@ -165,7 +185,7 @@ PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Baseball team wins model</title>
+<title>What explains MLB team wins?</title>
 <style>
  body {{ font-family: system-ui, sans-serif; max-width: 1000px; margin: 2rem auto; padding: 0 1rem; color: #222; }}
  table {{ border-collapse: collapse; margin: 1rem 0; }}
@@ -176,9 +196,10 @@ PAGE = """<!doctype html>
 </style>
 </head>
 <body>
-<h1>Predicting MLB team wins</h1>
-<p>Models predict a team's win percentage from per-game batting, pitching and fielding stats.
-They train on {train_n} team seasons from {first}-{train_end} and are tested on {test_n} seasons from {test_start} onward.</p>
+<h1>What explains MLB team wins?</h1>
+<p>Each model estimates a team's win percentage from that same season's per-game batting, pitching and fielding stats.
+This explains a season after the fact. It does not forecast future wins.
+Models train on {train_n} team seasons from {first}-{train_end} and are tested on {test_n} seasons from {test_start} onward.</p>
 <table>
 <tr><th>Model</th><th>MAE (wins/162)</th><th>R&sup2;</th></tr>
 {rows}
@@ -213,7 +234,11 @@ def main() -> None:
     df = prepare(load_data())
     test_df, metrics, importances, n_train, n_test = train(df)
 
-    model_cols = {"Linear regression": "pred_linear", "Random forest": "pred_forest"}
+    model_cols = {
+        "Pythagorean baseline": "pythag",
+        "Linear regression": "pred_linear",
+        "Random forest": "pred_forest",
+    }
     best_name = min(model_cols, key=lambda n: metrics[n]["mae_wins"])
 
     figs = [

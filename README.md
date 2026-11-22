@@ -1,14 +1,18 @@
 # Baseball-project
 
-A small machine learning project that predicts MLB team wins and publishes the results as a static site of interactive Plotly charts.
+A small machine learning project that models MLB team wins and publishes the results as a static site of interactive Plotly charts.
 
 ## What it does
 
-- Downloads `Teams.csv` from the [Baseball Databank](https://github.com/chadwickbureau/baseballdatabank) (CC BY-SA 3.0).
-- Builds per-game features (runs, hits, home runs, walks, strikeouts, errors, ERA) for seasons since 1900.
+- Downloads `Teams.csv` from the [Baseball Databank](https://github.com/chadwickbureau/baseballdatabank) (CC BY-SA 3.0), using a copy pinned to a fixed commit so results are reproducible.
+- Builds per-game features for seasons since 1900: runs scored and allowed, hits, home runs, walks and strikeouts (batting and allowed), and errors. ERA is used as is, since it is already a rate.
 - Trains on seasons before 2005 and tests on 2005 onward.
 - Compares a Pythagorean-expectation baseline, linear regression and a random forest.
 - Writes `site/index.html` with four charts: actual vs predicted wins, model error, feature importance, and league scoring trends.
+
+## What the model does and does not do
+
+The features come from the same season as the target. The model therefore explains how a season's stats map to its win total. It does not forecast future wins. Runs scored and allowed already determine most of a team's record, so the Pythagorean baseline is a strong reference point.
 
 ## Run locally
 
@@ -17,7 +21,7 @@ pip install -r requirements.txt
 python src/pipeline.py
 ```
 
-Then open `site/index.html` in a browser. The data is cached in `data/Teams.csv`.
+Then open `site/index.html` in a browser. The data is cached in `data/Teams.csv`. Delete that file to force a fresh download.
 
 ## Hosting
 
