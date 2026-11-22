@@ -70,7 +70,7 @@ def load_data() -> pd.DataFrame:
 def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df = df[df["yearID"] >= FIRST_YEAR].copy()
     df = df.dropna(subset=COUNT_COLS + ["ERA", "W", "L", "G"])
-    df = df[df["G"] > 0]
+    df = df[(df["G"] > 0) & ((df["W"] + df["L"]) > 0) & ((df["R"] + df["RA"]) > 0)]
     for c in COUNT_COLS:
         df[f"{c}_pg"] = df[c] / df["G"]
     df["win_pct"] = df["W"] / (df["W"] + df["L"])
@@ -132,7 +132,7 @@ def fig_actual_vs_predicted(test_df: pd.DataFrame, best_col: str, best_name: str
                    line=dict(dash="dash", color="gray"))
     )
     fig.update_layout(
-        title=f"Actual vs estimated wins per {GAMES} games (best model: {best_name}, {TRAIN_BEFORE}+ test seasons)",
+        title=f"Actual vs estimated wins per {GAMES} games (lowest test MAE: {best_name}, {TRAIN_BEFORE}+ test seasons)",
         xaxis_title="Actual wins (per 162 games)",
         yaxis_title="Estimated wins (per 162 games)",
     )
@@ -206,7 +206,8 @@ Models train on {train_n} team seasons from {first}-{train_end} and are tested o
 </table>
 {charts}
 <footer>Data: <a href="https://github.com/chadwickbureau/baseballdatabank">Baseball Databank</a>
-(Chadwick Baseball Bureau, CC BY-SA 3.0).</footer>
+(Chadwick Baseball Bureau, CC BY-SA 3.0), read from a pinned copy in the
+<a href="https://github.com/xorq-labs/baseballdatabank/tree/{data_commit}">xorq-labs mirror</a>.</footer>
 </body>
 </html>
 """
@@ -224,7 +225,7 @@ def build_site(figs: list[go.Figure], metrics: dict, n_train: int, n_test: int) 
     )
     page = PAGE.format(
         train_n=n_train, test_n=n_test, first=FIRST_YEAR, train_end=TRAIN_BEFORE - 1,
-        test_start=TRAIN_BEFORE, rows=rows, charts="\n".join(charts),
+        test_start=TRAIN_BEFORE, rows=rows, charts="\n".join(charts), data_commit=DATA_COMMIT,
     )
     (SITE_DIR / "index.html").write_text(page, encoding="utf-8")
     (SITE_DIR / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
